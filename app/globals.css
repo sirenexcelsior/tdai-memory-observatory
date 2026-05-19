@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #16110d;
+  --rail: #1d1712;
+  --panel: #241d18;
+  --panel-strong: #2f2620;
+  --line: rgba(244, 234, 223, 0.09);
+  --line-strong: rgba(244, 234, 223, 0.18);
+  --fg: #d2c6b9;
+  --fg-strong: #f6eee3;
+  --muted: #a59281;
+  --accent: #d9ad74;
+  --accent-soft: rgba(217, 173, 116, 0.14);
+  --ok: #7eb9a5;
+  --warn: #d2ab69;
+  --danger: #ce887b;
+  --shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+  --noise:
+    linear-gradient(rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.02)),
+    radial-gradient(circle at top, rgba(217, 173, 116, 0.05), transparent 34%);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(217, 173, 116, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(126, 185, 165, 0.05), transparent 24%),
+    var(--noise),
+    var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body), sans-serif;
+  letter-spacing: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(217, 173, 116, 0.22);
+  color: var(--fg-strong);
+}
+
+pre,
+code {
+  font-family: var(--font-mono), monospace;
+}
