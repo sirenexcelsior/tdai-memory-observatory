@@ -3,6 +3,7 @@ import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { translateMemoryType, type Language } from "@/lib/i18n";
 
 const DATA_DIR = process.env.TDAI_DATA_DIR ?? "/Users/siren/.memory-tencentdb/memory-tdai";
 const DB_PATH = path.join(DATA_DIR, "vectors.db");
@@ -220,6 +221,161 @@ function categorizeLog(raw: string): LogEntry {
   return { raw, category, severity, source: "stdout", timestampGuess: isoGuess };
 }
 
+function translateLogCategory(lang: Language, category: string) {
+  if (lang !== "zh") return category;
+
+  return {
+    "No JSON": "未提取到 JSON",
+    "Thinking mismatch": "thinking 模式不匹配",
+    "Embedding fetch failed": "Embedding 调用失败",
+    "Tool read failure": "工具读取失败",
+    "L1 extraction": "L1 提取",
+    Pipeline: "Pipeline",
+    SQLite: "SQLite",
+    General: "一般",
+  }[category] ?? category;
+}
+
+function translateHealthLabel(lang: Language, state: HealthState) {
+  if (lang === "zh") {
+    return {
+      online: "在线",
+      degraded: "降级",
+      offline: "离线",
+    }[state];
+  }
+
+  return {
+    online: "Online",
+    degraded: "Degraded",
+    offline: "Offline",
+  }[state];
+}
+
+function translateHealthDetails(lang: Language, state: HealthState, responseText?: string) {
+  if (lang === "zh") {
+    if (state === "online") return "Gateway 可访问，存储已初始化";
+    if (state === "degraded") return "Gateway 可访问，但当前处于降级状态";
+    return responseText ?? "Gateway 健康检查端点不可访问";
+  }
+
+  if (state === "online") return "Gateway reachable and store initialized";
+  if (state === "degraded") return "Gateway reachable but degraded";
+  return responseText ?? "Gateway health endpoint not reachable";
+}
+
+function translateSessionReason(
+  lang: Language,
+  params: {
+    state: SessionState;
+    l0Count: number;
+    l1Count: number;
+    pipeline: PipelineState | null;
+    runner: RunnerState | null;
+    hasErrors: boolean;
+  },
+) {
+  const { state, l0Count, l1Count, pipeline, runner, hasErrors } = params;
+
+  if (lang === "zh") {
+    if (state === "attention") {
+      return l1Count === 0
+        ? "最近日志里有和该会话直接相关的错误，且还没有写入 L1"
+        : "最近日志里出现了和该会话直接相关的错误";
+    }
+
+    if (state === "lagging") {
+      if (pipeline && pipeline.conversation_count > 0 && pipeline.conversation_count < pipeline.warmup_threshold) {
+        return "L1 已存在，但最新 L0 还没到下一次提取窗口";
+      }
+      return "Checkpoint cursor 落后于最新 L0 数据";
+    }
+
+    if (state === "healthy") {
+      return "L1 已存在，且 checkpoint 已追平";
+    }
+
+    if (!pipeline && !runner) {
+      return l0Count >= 10
+        ? "已有较多历史 L0，但当前没有关联的 checkpoint 或 L1 记录"
+        : "L0 已捕获，尚未进入 L1 跟踪";
+    }
+
+    if (pipeline?.last_extraction_time) {
+      return "发生过 L1 提取，但没有写入任何 L1 记录";
+    }
+
+    if (pipeline && pipeline.conversation_count > 0 && pipeline.conversation_count < pipeline.warmup_threshold) {
+      return `已捕获 ${pipeline.conversation_count} 轮对话，尚未达到下一次 L1 触发阈值`;
+    }
+
+    if (pipeline && pipeline.conversation_count >= pipeline.warmup_threshold) {
+      return "已达到 L1 触发条件，但还没有看到 L1 结果";
+    }
+
+    return hasErrors ? "还没有产生 L1 记录，且近期出现过错误" : "还没有产生 L1 记录";
+  }
+
+  if (state === "attention") {
+    return l1Count === 0
+      ? "Recent session-specific errors were logged and no L1 has been written yet"
+      : "Recent session-specific errors in logs";
+  }
+
+  if (state === "lagging") {
+    if (pipeline && pipeline.conversation_count > 0 && pipeline.conversation_count < pipeline.warmup_threshold) {
+      return "L1 exists, but the newest L0 has not reached the next extraction window yet";
+    }
+    return "Checkpoint cursor is behind latest L0 data";
+  }
+
+  if (state === "healthy") {
+    return "L1 is present and checkpoint is current";
+  }
+
+  if (!pipeline && !runner) {
+    return l0Count >= 10
+      ? "There is substantial historical L0, but no associated checkpoint or L1 record right now"
+      : "L0 has been captured but is not being tracked by L1 yet";
+  }
+
+  if (pipeline?.last_extraction_time) {
+    return "An L1 extraction appears to have run, but it did not write any L1 records";
+  }
+
+  if (pipeline && pipeline.conversation_count > 0 && pipeline.conversation_count < pipeline.warmup_threshold) {
+    return `${pipeline.conversation_count} conversation turns were captured, but the next L1 trigger threshold has not been reached yet`;
+  }
+
+  if (pipeline && pipeline.conversation_count >= pipeline.warmup_threshold) {
+    return "The session appears eligible for L1, but no L1 result is visible yet";
+  }
+
+  return hasErrors ? "No L1 records yet, and recent errors were observed" : "No L1 records yet";
+}
+
+function translatePathLabel(lang: Language, label: string) {
+  if (lang !== "zh") return label;
+
+  return {
+    "Data directory": "数据目录",
+    "SQLite database": "SQLite 数据库",
+    Checkpoint: "Checkpoint",
+    "Gateway stdout log": "Gateway stdout 日志",
+    "Gateway stderr log": "Gateway stderr 日志",
+  }[label] ?? label;
+}
+
+function translateEnvironmentLabel(lang: Language, label: string) {
+  if (lang !== "zh") return label;
+
+  return {
+    "Gateway URL": "Gateway 地址",
+    "Stdout log size": "stdout 日志大小",
+    "Stderr log size": "stderr 日志大小",
+  }[label] ?? label;
+}
+
 function collectLogs() {
   const stdout = readTail(STDOUT_LOG_PATH).map((raw) => ({ ...categorizeLog(raw), source: "stdout" as const }));
   const stderr = readTail(STDERR_LOG_PATH).map((raw) => ({ ...categorizeLog(raw), source: "stderr" as const }));
@@ -247,7 +403,7 @@ function summarizeErrors(entries: LogEntry[]): ErrorSummary[] {
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
-async function readHealth() {
+async function readHealth(lang: Language) {
   try {
     const response = await fetch(`${GATEWAY_URL}/health`, {
       cache: "no-store",
@@ -257,7 +413,7 @@ async function readHealth() {
     if (!response.ok) {
       return {
         state: "offline" as const,
-        label: "Offline",
+        label: translateHealthLabel(lang, "offline"),
         details: `${response.status} ${response.statusText}`,
         uptimeSeconds: null,
         version: null,
@@ -268,8 +424,8 @@ async function readHealth() {
     const payload = (await response.json()) as GatewayHealthPayload;
     return {
       state: payload.status === "ok" ? "online" as const : "degraded" as const,
-      label: payload.status === "ok" ? "Online" : "Degraded",
-      details: payload.status === "ok" ? "Gateway reachable and store initialized" : "Gateway reachable but degraded",
+      label: translateHealthLabel(lang, payload.status === "ok" ? "online" : "degraded"),
+      details: translateHealthDetails(lang, payload.status === "ok" ? "online" : "degraded"),
       uptimeSeconds: payload.uptime,
       version: payload.version,
       stores: payload.stores,
@@ -277,8 +433,8 @@ async function readHealth() {
   } catch {
     return {
       state: "offline" as const,
-      label: "Offline",
-      details: "Gateway health endpoint not reachable",
+      label: translateHealthLabel(lang, "offline"),
+      details: translateHealthDetails(lang, "offline"),
       uptimeSeconds: null,
       version: null,
       stores: null,
@@ -299,20 +455,63 @@ function readCheckpoint() {
 
 function deriveSessionState(params: {
   l1Count: number;
+  l0Count: number;
   lastCursorMs: number;
   maxRecordedAtMs: number;
   hasErrors: boolean;
-}) {
+  pipeline: PipelineState | null;
+  runner: RunnerState | null;
+}, lang: Language) {
   if (params.hasErrors) {
-    return { state: "attention" as const, reason: "Recent session-specific errors in logs" };
+    return {
+      state: "attention" as const,
+      reason: translateSessionReason(lang, {
+        state: "attention",
+        l0Count: params.l0Count,
+        l1Count: params.l1Count,
+        pipeline: params.pipeline,
+        runner: params.runner,
+        hasErrors: params.hasErrors,
+      }),
+    };
   }
   if (params.l1Count === 0) {
-    return { state: "empty" as const, reason: "No L1 records yet" };
+    return {
+      state: "empty" as const,
+      reason: translateSessionReason(lang, {
+        state: "empty",
+        l0Count: params.l0Count,
+        l1Count: params.l1Count,
+        pipeline: params.pipeline,
+        runner: params.runner,
+        hasErrors: params.hasErrors,
+      }),
+    };
   }
   if (params.lastCursorMs < params.maxRecordedAtMs) {
-    return { state: "lagging" as const, reason: "Checkpoint cursor is behind latest L0 data" };
+    return {
+      state: "lagging" as const,
+      reason: translateSessionReason(lang, {
+        state: "lagging",
+        l0Count: params.l0Count,
+        l1Count: params.l1Count,
+        pipeline: params.pipeline,
+        runner: params.runner,
+        hasErrors: params.hasErrors,
+      }),
+    };
   }
-  return { state: "healthy" as const, reason: "L1 is present and checkpoint is current" };
+  return {
+    state: "healthy" as const,
+    reason: translateSessionReason(lang, {
+      state: "healthy",
+      l0Count: params.l0Count,
+      l1Count: params.l1Count,
+      pipeline: params.pipeline,
+      runner: params.runner,
+      hasErrors: params.hasErrors,
+    }),
+  };
 }
 
 function loadSessionRows() {
@@ -352,11 +551,14 @@ function loadSessionRows() {
   }
 }
 
-export async function getOverviewData(): Promise<OverviewData> {
-  const [health, sessionRows] = await Promise.all([readHealth(), Promise.resolve(loadSessionRows())]);
+export async function getOverviewData(lang: Language = "en"): Promise<OverviewData> {
+  const [health, sessionRows] = await Promise.all([readHealth(lang), Promise.resolve(loadSessionRows())]);
   const checkpoint = readCheckpoint();
   const logEntries = collectLogs();
-  const errors = summarizeErrors(logEntries);
+  const errors = summarizeErrors(logEntries).map((item) => ({
+    ...item,
+    category: translateLogCategory(lang, item.category),
+  }));
 
   const db = openDb();
   try {
@@ -369,20 +571,20 @@ export async function getOverviewData(): Promise<OverviewData> {
       ORDER BY cnt DESC
     `).all() as Array<{ type: string; cnt: number }>;
 
-    const recentSessions = buildSessionList(sessionRows, checkpoint, logEntries).slice(0, 8);
+    const recentSessions = buildSessionList(sessionRows, checkpoint, logEntries, lang).slice(0, 8);
     const activeSessions = Object.values(checkpoint.pipeline_states).filter((item) => item.conversation_count > 0).length;
     const laggingSessions = recentSessions.filter((item) => item.state === "lagging" || item.state === "attention").length;
 
     return {
       health,
       metrics: [
-        { label: "L0 Messages", value: l0Count.toLocaleString(), hint: "Raw captured turns" },
-        { label: "L1 Memories", value: l1Count.toLocaleString(), hint: "Structured memory records" },
-        { label: "Tracked Sessions", value: `${sessionRows.length}`, hint: "Seen in checkpoint + DB" },
-        { label: "Recent Errors", value: `${errors.reduce((sum, item) => sum + item.count, 0)}`, hint: "From latest gateway logs" },
+        { label: lang === "zh" ? "L0 消息" : "L0 Messages", value: l0Count.toLocaleString(), hint: lang === "zh" ? "原始捕获轮次" : "Raw captured turns" },
+        { label: lang === "zh" ? "L1 记忆" : "L1 Memories", value: l1Count.toLocaleString(), hint: lang === "zh" ? "结构化记忆记录" : "Structured memory records" },
+        { label: lang === "zh" ? "会话总数" : "Tracked Sessions", value: `${sessionRows.length}`, hint: lang === "zh" ? "来自 checkpoint 与数据库" : "Seen in checkpoint + DB" },
+        { label: lang === "zh" ? "近期错误" : "Recent Errors", value: `${errors.reduce((sum, item) => sum + item.count, 0)}`, hint: lang === "zh" ? "来自最新 Gateway 日志" : "From latest gateway logs" },
       ],
       memoryMix: typeRows.map((row, index) => ({
-        label: row.type || "untyped",
+        label: translateMemoryType(lang, row.type || "untyped"),
         count: Number(row.cnt),
         tone: (["teal", "amber", "violet", "slate"][index % 4] as OverviewData["memoryMix"][number]["tone"]),
       })),
@@ -405,6 +607,7 @@ function buildSessionList(
   rows: ReturnType<typeof loadSessionRows>,
   checkpoint: CheckpointPayload,
   logEntries: LogEntry[],
+  lang: Language,
 ) {
   return rows.map<SessionListItem>((row) => {
     const runner = checkpoint.runner_states[row.session_key] ?? null;
@@ -415,10 +618,13 @@ function buildSessionList(
     );
     const derived = deriveSessionState({
       l1Count: Number(row.l1_count),
+      l0Count: Number(row.l0_count),
       lastCursorMs: runner?.last_l1_cursor ?? 0,
       maxRecordedAtMs,
       hasErrors,
-    });
+      pipeline,
+      runner,
+    }, lang);
 
     return {
       sessionKey: row.session_key,
@@ -436,10 +642,10 @@ function buildSessionList(
   });
 }
 
-export async function getSessions(search?: string) {
+export async function getSessions(search?: string, lang: Language = "en") {
   const checkpoint = readCheckpoint();
   const logEntries = collectLogs();
-  const sessions = buildSessionList(loadSessionRows(), checkpoint, logEntries);
+  const sessions = buildSessionList(loadSessionRows(), checkpoint, logEntries, lang);
 
   const normalized = search?.trim().toLowerCase();
   if (!normalized) return sessions;
@@ -453,8 +659,8 @@ export async function getSessions(search?: string) {
   });
 }
 
-export async function getSessionDetail(sessionKey: string): Promise<SessionDetailData> {
-  const [sessions, checkpoint] = await Promise.all([getSessions(), Promise.resolve(readCheckpoint())]);
+export async function getSessionDetail(sessionKey: string, lang: Language = "en"): Promise<SessionDetailData> {
+  const [sessions, checkpoint] = await Promise.all([getSessions(undefined, lang), Promise.resolve(readCheckpoint())]);
   const session = sessions.find((item) => item.sessionKey === sessionKey) ?? null;
   const db = openDb();
 
@@ -475,6 +681,7 @@ export async function getSessionDetail(sessionKey: string): Promise<SessionDetai
 
     const relatedLogs = collectLogs()
       .filter((entry) => entry.raw.includes(sessionKey))
+      .map((entry) => ({ ...entry, category: translateLogCategory(lang, entry.category) }))
       .slice(-60);
 
     return {
@@ -492,18 +699,22 @@ export async function getSessionDetail(sessionKey: string): Promise<SessionDetai
   }
 }
 
-export async function getErrorsPageData(): Promise<ErrorPageData> {
+export async function getErrorsPageData(lang: Language = "en"): Promise<ErrorPageData> {
   const logs = collectLogs();
-  const summaries = summarizeErrors(logs);
+  const summaries = summarizeErrors(logs).map((entry) => ({
+    ...entry,
+    category: translateLogCategory(lang, entry.category),
+  }));
   const recentEntries = logs
     .filter((entry) => entry.severity !== "info")
+    .map((entry) => ({ ...entry, category: translateLogCategory(lang, entry.category) }))
     .slice(-80)
     .reverse();
 
   return { summaries, recentEntries };
 }
 
-export async function getConfigPageData(): Promise<ConfigPageData> {
+export async function getConfigPageData(lang: Language = "en"): Promise<ConfigPageData> {
   const config = redactSecrets(safeReadJson(CONFIG_PATH, {}));
   const checkpoint = readCheckpoint();
   const stdoutStat = safeStat(STDOUT_LOG_PATH);
@@ -512,16 +723,16 @@ export async function getConfigPageData(): Promise<ConfigPageData> {
   return {
     config,
     paths: [
-      { label: "Data directory", value: DATA_DIR },
-      { label: "SQLite database", value: DB_PATH },
-      { label: "Checkpoint", value: CHECKPOINT_PATH },
-      { label: "Gateway stdout log", value: STDOUT_LOG_PATH },
-      { label: "Gateway stderr log", value: STDERR_LOG_PATH },
+      { label: translatePathLabel(lang, "Data directory"), value: DATA_DIR },
+      { label: translatePathLabel(lang, "SQLite database"), value: DB_PATH },
+      { label: translatePathLabel(lang, "Checkpoint"), value: CHECKPOINT_PATH },
+      { label: translatePathLabel(lang, "Gateway stdout log"), value: STDOUT_LOG_PATH },
+      { label: translatePathLabel(lang, "Gateway stderr log"), value: STDERR_LOG_PATH },
     ],
     environment: [
-      { label: "Gateway URL", value: GATEWAY_URL },
-      { label: "Stdout log size", value: stdoutStat ? `${(stdoutStat.size / 1024).toFixed(1)} KB` : "missing" },
-      { label: "Stderr log size", value: stderrStat ? `${(stderrStat.size / 1024).toFixed(1)} KB` : "missing" },
+      { label: translateEnvironmentLabel(lang, "Gateway URL"), value: GATEWAY_URL },
+      { label: translateEnvironmentLabel(lang, "Stdout log size"), value: stdoutStat ? `${(stdoutStat.size / 1024).toFixed(1)} KB` : (lang === "zh" ? "缺失" : "missing") },
+      { label: translateEnvironmentLabel(lang, "Stderr log size"), value: stderrStat ? `${(stderrStat.size / 1024).toFixed(1)} KB` : (lang === "zh" ? "缺失" : "missing") },
     ],
     checkpoint: {
       totalProcessed: checkpoint.total_processed,

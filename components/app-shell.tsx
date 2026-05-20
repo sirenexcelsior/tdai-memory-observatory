@@ -10,16 +10,24 @@ import {
   Search,
   Settings2,
 } from "lucide-react";
+import { getCopy, type Language } from "@/lib/i18n";
+import { LanguageToggle } from "@/components/language-toggle";
 
-const navigation = [
-  { href: "/", label: "Overview", icon: Gauge },
-  { href: "/sessions", label: "Sessions", icon: Search },
-  { href: "/errors", label: "Errors", icon: AlertTriangle },
-  { href: "/config", label: "Config", icon: Settings2 },
-];
-
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  lang,
+}: {
+  children: React.ReactNode;
+  lang: Language;
+}) {
   const pathname = usePathname();
+  const text = getCopy(lang);
+  const navigation = [
+    { href: "/", label: text.shell.navOverview, icon: Gauge },
+    { href: "/sessions", label: text.shell.navSessions, icon: Search },
+    { href: "/errors", label: text.shell.navErrors, icon: AlertTriangle },
+    { href: "/config", label: text.shell.navConfig, icon: Settings2 },
+  ];
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--fg)]">
@@ -32,16 +40,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
               <div>
                 <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">
-                  TencentDB Memory
+                  {text.shell.sidebarTag}
                 </p>
                 <h1 className="font-[family-name:var(--font-display)] text-xl text-[var(--fg-strong)]">
-                  Observatory
+                  {text.shell.sidebarTitle}
                 </h1>
               </div>
             </div>
             <p className="max-w-[18rem] text-sm leading-6 text-[var(--muted)]">
-              Read-only operating console for live gateway health, session flow,
-              and structured memory visibility.
+              {text.shell.sidebarDetail}
             </p>
           </div>
 
@@ -74,11 +81,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mt-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-4">
             <div className="flex items-center gap-2 text-sm text-[var(--fg)]">
               <Activity className="h-4 w-4 text-[var(--accent)]" />
-              Observability-first MVP
+              {text.shell.footerTitle}
             </div>
             <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-              Designed for debugging, not mutation. Every page is read-only by
-              default.
+              {text.shell.footerDetail}
             </p>
           </div>
         </aside>
@@ -88,14 +94,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">
-                  Local Console
+                  {text.shell.headerEyebrow}
                 </p>
                 <p className="mt-1 text-sm text-[var(--muted)]">
-                  Gateway, SQLite, checkpoint, and log observability in one view.
+                  {text.shell.headerDetail}
                 </p>
               </div>
-              <div className="rounded-full border border-[var(--line)] px-3 py-1 text-xs text-[var(--muted)]">
-                read only
+              <div className="flex items-center gap-2">
+                <LanguageToggle current={lang} />
+                <div className="rounded-full border border-[var(--line)] px-3 py-1 text-xs text-[var(--muted)]">
+                  {text.shell.readOnly}
+                </div>
               </div>
             </div>
             <nav className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">

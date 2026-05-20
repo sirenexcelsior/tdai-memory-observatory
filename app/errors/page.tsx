@@ -1,15 +1,19 @@
 import { getErrorsPageData } from "@/lib/tdai";
+import { getCopy } from "@/lib/i18n";
 import { PageSection, StatusBadge } from "@/components/ui";
+import { getCurrentLanguage } from "@/lib/server-language";
 
 export default async function ErrorsPage() {
-  const data = await getErrorsPageData();
+  const lang = await getCurrentLanguage();
+  const text = getCopy(lang);
+  const data = await getErrorsPageData(lang);
 
   return (
     <>
       <PageSection
-        eyebrow="Errors"
-        title="Grouped failure patterns"
-        detail="Errors are grouped by operational meaning so you can see whether the current problem is mostly extraction, thinking mode, embedding, or tooling."
+        eyebrow={text.errors.eyebrow}
+        title={text.errors.title}
+        detail={text.errors.detail}
       >
         <div className="grid gap-4 lg:grid-cols-2">
           {data.summaries.map((summary) => (
@@ -19,7 +23,7 @@ export default async function ErrorsPage() {
                   <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{summary.category}</p>
                   <p className="mt-2 text-3xl text-[var(--fg-strong)]">{summary.count}</p>
                 </div>
-                <StatusBadge tone="attention">error class</StatusBadge>
+                <StatusBadge tone="attention">{text.errors.errorClass}</StatusBadge>
               </div>
               <p className="mt-4 text-sm leading-6 text-[var(--muted)]">{summary.sample}</p>
             </div>
@@ -28,16 +32,16 @@ export default async function ErrorsPage() {
       </PageSection>
 
       <PageSection
-        eyebrow="Recent lines"
-        title="Recent error-bearing log entries"
-        detail="A compact stream of the latest non-info lines from stdout and stderr."
+        eyebrow={text.errors.recentEyebrow}
+        title={text.errors.recentTitle}
+        detail={text.errors.recentDetail}
       >
         <div className="space-y-3">
           {data.recentEntries.map((entry, index) => (
             <div key={`${entry.source}-${index}`} className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-4">
               <div className="flex flex-wrap items-center gap-3">
                 <StatusBadge tone={entry.severity === "error" ? "attention" : "lagging"}>
-                  {entry.source}
+                  {entry.source === "stdout" ? text.common.stdout : text.common.stderr}
                 </StatusBadge>
                 <p className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">{entry.category}</p>
                 {entry.timestampGuess ? (

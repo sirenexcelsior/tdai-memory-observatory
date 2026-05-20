@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Fraunces, Manrope, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { AppShell } from "@/components/app-shell";
+import { getCurrentLanguage } from "@/lib/server-language";
 
 const bodyFont = Manrope({
   variable: "--font-body",
@@ -26,18 +27,20 @@ export const metadata: Metadata = {
   description: "Read-only TencentDB memory gateway observability console",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const lang = await getCurrentLanguage();
+
   return (
     <html
-      lang="en"
+      lang={lang === "zh" ? "zh-CN" : "en"}
       className={`${bodyFont.variable} ${monoFont.variable} ${displayFont.variable} h-full antialiased`}
     >
       <body className="min-h-full font-[family-name:var(--font-body)]">
-        <AppShell>{children}</AppShell>
+        <AppShell lang={lang}>{children}</AppShell>
       </body>
     </html>
   );
