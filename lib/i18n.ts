@@ -265,7 +265,7 @@ export const copy: Record<Language, Copy> = {
     config: {
       eyebrow: "配置",
       title: "运行时配置",
-      detail: "这里以只读方式镜像当前本地 Gateway 配置，并在渲染前对敏感信息做脱敏。",
+      detail: "这里既展示当前本地 Gateway 配置，也允许你为当前浏览器保存运行时输入。对记忆数据库本身仍然保持只读。",
       environment: "环境信息",
       checkpointSummary: "Checkpoint 摘要",
       totalProcessed: "累计处理",
@@ -411,7 +411,7 @@ export const copy: Record<Language, Copy> = {
     config: {
       eyebrow: "Config",
       title: "Runtime configuration",
-      detail: "The page mirrors the local gateway configuration in read-only form and masks secrets before rendering.",
+      detail: "This page mirrors the local gateway configuration, and also lets you save browser-scoped runtime inputs while keeping the memory data itself read-only.",
       environment: "Environment",
       checkpointSummary: "Checkpoint summary",
       totalProcessed: "Total processed",

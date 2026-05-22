@@ -88,7 +88,7 @@ By default, the app reads:
 - `logs/gateway.stderr.log`
 - `http://127.0.0.1:8420/health`
 
-All of those are configurable through environment variables or local file placement.
+All of those are configurable through environment variables, and the data directory plus gateway URL can also be overridden from the in-app `Config` page and saved per browser.
 
 ## Quick Start
 
@@ -123,12 +123,21 @@ Then open:
 
 [http://localhost:3000](http://localhost:3000)
 
+### 4. Optionally override runtime inputs in the UI
+
+Open the `Config` page if you want to point the observatory at a different:
+
+- TencentDB memory data directory
+- Gateway base URL
+
+Those values are saved in browser-scoped cookies, so they survive refreshes without mutating your actual memory store.
+
 ## Environment
 
 `.env.example` includes the two main inputs:
 
 ```bash
-TDAI_DATA_DIR=/Users/siren/.memory-tencentdb/memory-tdai
+TDAI_DATA_DIR=/absolute/path/to/your/memory-tdai
 TDAI_GATEWAY_URL=http://127.0.0.1:8420
 ```
 
@@ -136,6 +145,12 @@ Variables:
 
 - `TDAI_DATA_DIR`: local TencentDB memory data directory
 - `TDAI_GATEWAY_URL`: gateway base URL used for `/health`
+
+Precedence:
+
+1. Values saved in the `Config` page
+2. Environment variables
+3. Built-in defaults (`~/.memory-tencentdb/memory-tdai` and `http://127.0.0.1:8420`)
 
 ## Notes
 

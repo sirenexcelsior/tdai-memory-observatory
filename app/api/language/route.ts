@@ -4,7 +4,8 @@ import { normalizeLanguage } from "@/lib/i18n";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const lang = normalizeLanguage(url.searchParams.get("lang"));
-  const redirect = url.searchParams.get("redirect") || "/";
+  const redirectParam = url.searchParams.get("redirect") || "/";
+  const redirect = redirectParam.startsWith("/") ? redirectParam : "/";
 
   const response = NextResponse.redirect(new URL(redirect, url.origin));
   response.cookies.set("tdai-lang", lang, {

@@ -100,7 +100,7 @@ export default async function Home() {
                   <p className="mt-2 text-3xl text-[var(--fg-strong)]">{item.count}</p>
                 </div>
                 <p className="text-sm text-[var(--muted)]">
-                  {Math.round((item.count / Math.max(data.metrics[1] ? Number(data.metrics[1].value.replace(/,/g, "")) : item.count, 1)) * 100)}%
+                  {item.sharePercent}%
                 </p>
               </div>
               <ToneBar tone={item.tone} value={item.count} max={maxMix} />

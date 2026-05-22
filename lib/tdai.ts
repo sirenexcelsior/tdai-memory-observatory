@@ -1,17 +1,9 @@
 import "server-only";
 
 import fs from "node:fs";
-import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { translateMemoryType, type Language } from "@/lib/i18n";
-
-const DATA_DIR = process.env.TDAI_DATA_DIR ?? "/Users/siren/.memory-tencentdb/memory-tdai";
-const DB_PATH = path.join(DATA_DIR, "vectors.db");
-const CHECKPOINT_PATH = path.join(DATA_DIR, ".metadata", "recall_checkpoint.json");
-const CONFIG_PATH = path.join(DATA_DIR, "tdai-gateway.json");
-const STDOUT_LOG_PATH = path.join(DATA_DIR, "logs", "gateway.stdout.log");
-const STDERR_LOG_PATH = path.join(DATA_DIR, "logs", "gateway.stderr.log");
-const GATEWAY_URL = process.env.TDAI_GATEWAY_URL ?? "http://127.0.0.1:8420";
+import { getRuntimeConfig, type RuntimeConfig, type RuntimeValueSource } from "@/lib/runtime-config";
 
 export type HealthState = "online" | "degraded" | "offline";
 export type SessionState = "healthy" | "attention" | "lagging" | "empty";
@@ -61,7 +53,7 @@ export type OverviewData = {
     stores: { vectorStore: boolean; embeddingService: boolean } | null;
   };
   metrics: Array<{ label: string; value: string; hint: string }>;
-  memoryMix: Array<{ label: string; count: number; tone: "teal" | "amber" | "violet" | "slate" }>;
+  memoryMix: Array<{ label: string; count: number; sharePercent: number; tone: "teal" | "amber" | "violet" | "slate" }>;
   pipeline: {
     trackedSessions: number;
     activeSessions: number;
@@ -126,6 +118,18 @@ export type ErrorPageData = {
 
 export type ConfigPageData = {
   config: unknown;
+  runtime: {
+    dataDir: string;
+    gatewayUrl: string;
+    defaults: {
+      dataDir: string;
+      gatewayUrl: string;
+    };
+    sources: {
+      dataDir: RuntimeValueSource;
+      gatewayUrl: RuntimeValueSource;
+    };
+  };
   paths: Array<{ label: string; value: string }>;
   environment: Array<{ label: string; value: string }>;
   checkpoint: {
@@ -141,12 +145,22 @@ export type LogEntry = {
   source: "stdout" | "stderr";
   raw: string;
   timestampGuess: string | null;
+  timestampMs: number | null;
   category: string;
   severity: "error" | "warn" | "info";
+  order: number;
 };
 
-function openDb() {
-  return new DatabaseSync(DB_PATH, { readOnly: true });
+function openDb(dbPath: string) {
+  return new DatabaseSync(dbPath, { readOnly: true });
+}
+
+function tryOpenDb(dbPath: string) {
+  try {
+    return openDb(dbPath);
+  } catch {
+    return null;
+  }
 }
 
 function safeReadJson<T>(filePath: string, fallback: T): T {
@@ -201,6 +215,8 @@ function readTail(filePath: string, lineLimit = 600) {
 }
 
 function categorizeLog(raw: string): LogEntry {
+  const timestampGuess = raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/)?.[0] ?? null;
+  const timestampMs = timestampGuess ? Date.parse(timestampGuess) : null;
   const severity: LogEntry["severity"] =
     /failed|error|ENOENT|NO_JSON|reasoning_content|ERR_/i.test(raw) ? "error" :
     /warn|degraded|fallback/i.test(raw) ? "warn" :
@@ -216,9 +232,7 @@ function categorizeLog(raw: string): LogEntry {
     /\[sqlite\]/i.test(raw) ? "SQLite" :
     "General";
 
-  const isoGuess = raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/)?.[0] ?? null;
-
-  return { raw, category, severity, source: "stdout", timestampGuess: isoGuess };
+  return { raw, category, severity, source: "stdout", timestampGuess, timestampMs, order: 0 };
 }
 
 function translateLogCategory(lang: Language, category: string) {
@@ -273,15 +287,78 @@ function translateSessionReason(
     pipeline: PipelineState | null;
     runner: RunnerState | null;
     hasErrors: boolean;
+    errorCategory?: string | null;
   },
 ) {
-  const { state, l0Count, l1Count, pipeline, runner, hasErrors } = params;
+  const { state, l0Count, l1Count, pipeline, runner, hasErrors, errorCategory } = params;
 
-  if (lang === "zh") {
-    if (state === "attention") {
+  const attentionReason = (() => {
+    if (lang === "zh") {
+      if (errorCategory === "Embedding fetch failed") {
+        return l1Count === 0
+          ? "Embedding 失败迹象：最近和该会话相关的向量化请求失败，L1 可能因此没有完成写入"
+          : "Embedding 失败迹象：最近和该会话相关的向量化请求失败，后续召回或补写可能受影响";
+      }
+
+      if (errorCategory === "Thinking mismatch") {
+        return "提取失败迹象：最近和该会话相关的 thinking 模式不匹配，L1 提取被中断";
+      }
+
+      if (errorCategory === "No JSON" || errorCategory === "L1 extraction") {
+        return "提取失败迹象：最近和该会话相关的 L1 提取没有得到可写入的结构化结果";
+      }
+
+      if (errorCategory === "Tool read failure") {
+        return "工具失败迹象：最近和该会话相关的工具读取失败，提取链路可能被打断";
+      }
+
+      if (errorCategory === "SQLite") {
+        return "存储失败迹象：最近和该会话相关的 SQLite 读写出现异常";
+      }
+
+      if (errorCategory === "Pipeline") {
+        return "Pipeline 失败迹象：最近和该会话相关的调度或队列处理出现异常";
+      }
+
       return l1Count === 0
         ? "最近日志里有和该会话直接相关的错误，且还没有写入 L1"
         : "最近日志里出现了和该会话直接相关的错误";
+    }
+
+    if (errorCategory === "Embedding fetch failed") {
+      return l1Count === 0
+        ? "Embedding failure signal: recent vectorization requests tied to this session failed, so L1 may never have completed"
+        : "Embedding failure signal: recent vectorization requests tied to this session failed, which may affect follow-on recall or enrichment";
+    }
+
+    if (errorCategory === "Thinking mismatch") {
+      return "Extraction failure signal: a recent thinking-mode mismatch interrupted L1 extraction for this session";
+    }
+
+    if (errorCategory === "No JSON" || errorCategory === "L1 extraction") {
+      return "Extraction failure signal: a recent L1 extraction for this session did not yield a storable structured result";
+    }
+
+    if (errorCategory === "Tool read failure") {
+      return "Tooling failure signal: a recent read-tool error appears to have interrupted extraction for this session";
+    }
+
+    if (errorCategory === "SQLite") {
+      return "Storage failure signal: recent SQLite reads or writes tied to this session failed";
+    }
+
+    if (errorCategory === "Pipeline") {
+      return "Pipeline failure signal: recent scheduling or queue handling tied to this session failed";
+    }
+
+    return l1Count === 0
+      ? "Recent session-specific errors were logged and no L1 has been written yet"
+      : "Recent session-specific errors in logs";
+  })();
+
+  if (lang === "zh") {
+    if (state === "attention") {
+      return attentionReason;
     }
 
     if (state === "lagging") {
@@ -317,9 +394,7 @@ function translateSessionReason(
   }
 
   if (state === "attention") {
-    return l1Count === 0
-      ? "Recent session-specific errors were logged and no L1 has been written yet"
-      : "Recent session-specific errors in logs";
+    return attentionReason;
   }
 
   if (state === "lagging") {
@@ -371,15 +446,57 @@ function translateEnvironmentLabel(lang: Language, label: string) {
 
   return {
     "Gateway URL": "Gateway 地址",
+    "Gateway URL source": "Gateway 地址来源",
+    "Data directory source": "数据目录来源",
     "Stdout log size": "stdout 日志大小",
     "Stderr log size": "stderr 日志大小",
   }[label] ?? label;
 }
 
-function collectLogs() {
-  const stdout = readTail(STDOUT_LOG_PATH).map((raw) => ({ ...categorizeLog(raw), source: "stdout" as const }));
-  const stderr = readTail(STDERR_LOG_PATH).map((raw) => ({ ...categorizeLog(raw), source: "stderr" as const }));
-  return [...stderr, ...stdout];
+function translateRuntimeSource(lang: Language, source: RuntimeValueSource) {
+  if (lang === "zh") {
+    return {
+      saved: "页面保存",
+      environment: "环境变量",
+      default: "默认值",
+    }[source];
+  }
+
+  return {
+    saved: "Saved in browser",
+    environment: "Environment variable",
+    default: "Default fallback",
+  }[source];
+}
+
+function collectLogs(config: RuntimeConfig) {
+  const stdoutMtimeMs = safeStat(config.stdoutLogPath)?.mtimeMs ?? 0;
+  const stderrMtimeMs = safeStat(config.stderrLogPath)?.mtimeMs ?? 0;
+  const stdout = readTail(config.stdoutLogPath).map((raw, index) => ({
+    ...categorizeLog(raw),
+    source: "stdout" as const,
+    order: index,
+  }));
+  const stderr = readTail(config.stderrLogPath).map((raw, index) => ({
+    ...categorizeLog(raw),
+    source: "stderr" as const,
+    order: index,
+  }));
+
+  return [...stdout, ...stderr].sort((left, right) => {
+    const leftSortMs = left.timestampMs ?? (left.source === "stdout" ? stdoutMtimeMs : stderrMtimeMs);
+    const rightSortMs = right.timestampMs ?? (right.source === "stdout" ? stdoutMtimeMs : stderrMtimeMs);
+
+    if (leftSortMs !== rightSortMs) {
+      return leftSortMs - rightSortMs;
+    }
+
+    if (left.source !== right.source) {
+      return left.source === "stdout" ? -1 : 1;
+    }
+
+    return left.order - right.order;
+  });
 }
 
 function summarizeErrors(entries: LogEntry[]): ErrorSummary[] {
@@ -403,9 +520,9 @@ function summarizeErrors(entries: LogEntry[]): ErrorSummary[] {
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
-async function readHealth(lang: Language) {
+async function readHealth(lang: Language, gatewayUrl: string) {
   try {
-    const response = await fetch(`${GATEWAY_URL}/health`, {
+    const response = await fetch(`${gatewayUrl}/health`, {
       cache: "no-store",
       signal: AbortSignal.timeout(1500),
     });
@@ -442,8 +559,8 @@ async function readHealth(lang: Language) {
   }
 }
 
-function readCheckpoint() {
-  return safeReadJson<CheckpointPayload>(CHECKPOINT_PATH, {
+function readCheckpoint(checkpointPath: string) {
+  return safeReadJson<CheckpointPayload>(checkpointPath, {
     total_processed: 0,
     last_persona_time: "",
     memories_since_last_persona: 0,
@@ -453,16 +570,69 @@ function readCheckpoint() {
   });
 }
 
+const SESSION_ERROR_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+type SessionErrorQuery = {
+  sessionKey: string;
+  logEntries: LogEntry[];
+  l1Count: number;
+  maxRecordedAtMs: number;
+  lastCursorMs: number;
+  lastL1At: string | null;
+};
+
+function isRelevantSessionError(entry: LogEntry, params: SessionErrorQuery) {
+  const { sessionKey, l1Count, maxRecordedAtMs, lastCursorMs, lastL1At } = params;
+
+  if (entry.severity !== "error" || !entry.raw.includes(sessionKey)) {
+    return false;
+  }
+
+  const lastL1AtMs = lastL1At ? Date.parse(lastL1At) || 0 : 0;
+  const lastSuccessMs = Math.max(lastCursorMs, lastL1AtMs);
+  const recentCutoffMs = maxRecordedAtMs > 0 ? maxRecordedAtMs - SESSION_ERROR_WINDOW_MS : 0;
+
+  if (entry.timestampMs == null) {
+    return l1Count === 0 || lastSuccessMs < maxRecordedAtMs;
+  }
+
+  if (l1Count === 0) {
+    return entry.timestampMs >= recentCutoffMs;
+  }
+
+  return entry.timestampMs >= Math.max(lastSuccessMs, recentCutoffMs);
+}
+
+function getRelevantSessionError(params: SessionErrorQuery) {
+  const sessionErrors = params.logEntries.filter((entry) => isRelevantSessionError(entry, params));
+
+  if (sessionErrors.length === 0) {
+    return null;
+  }
+
+  return sessionErrors[sessionErrors.length - 1];
+}
+
 function deriveSessionState(params: {
   l1Count: number;
   l0Count: number;
   lastCursorMs: number;
   maxRecordedAtMs: number;
-  hasErrors: boolean;
+  recentRelevantError: LogEntry | null;
   pipeline: PipelineState | null;
   runner: RunnerState | null;
 }, lang: Language) {
-  if (params.hasErrors) {
+  let baseState: SessionState;
+
+  if (params.l1Count === 0) {
+    baseState = "empty";
+  } else if (params.lastCursorMs < params.maxRecordedAtMs) {
+    baseState = "lagging";
+  } else {
+    baseState = "healthy";
+  }
+
+  if (baseState !== "healthy" && params.recentRelevantError) {
     return {
       state: "attention" as const,
       reason: translateSessionReason(lang, {
@@ -471,11 +641,13 @@ function deriveSessionState(params: {
         l1Count: params.l1Count,
         pipeline: params.pipeline,
         runner: params.runner,
-        hasErrors: params.hasErrors,
+        hasErrors: true,
+        errorCategory: params.recentRelevantError.category,
       }),
     };
   }
-  if (params.l1Count === 0) {
+
+  if (baseState === "empty") {
     return {
       state: "empty" as const,
       reason: translateSessionReason(lang, {
@@ -484,11 +656,12 @@ function deriveSessionState(params: {
         l1Count: params.l1Count,
         pipeline: params.pipeline,
         runner: params.runner,
-        hasErrors: params.hasErrors,
+        hasErrors: Boolean(params.recentRelevantError),
       }),
     };
   }
-  if (params.lastCursorMs < params.maxRecordedAtMs) {
+
+  if (baseState === "lagging") {
     return {
       state: "lagging" as const,
       reason: translateSessionReason(lang, {
@@ -497,10 +670,11 @@ function deriveSessionState(params: {
         l1Count: params.l1Count,
         pipeline: params.pipeline,
         runner: params.runner,
-        hasErrors: params.hasErrors,
+        hasErrors: Boolean(params.recentRelevantError),
       }),
     };
   }
+
   return {
     state: "healthy" as const,
     reason: translateSessionReason(lang, {
@@ -509,13 +683,17 @@ function deriveSessionState(params: {
       l1Count: params.l1Count,
       pipeline: params.pipeline,
       runner: params.runner,
-      hasErrors: params.hasErrors,
+      hasErrors: Boolean(params.recentRelevantError),
     }),
   };
 }
 
-function loadSessionRows() {
-  const db = openDb();
+function loadSessionRows(config: RuntimeConfig) {
+  const db = tryOpenDb(config.dbPath);
+  if (!db) {
+    return [];
+  }
+
   try {
     const rows = db.prepare(`
       WITH l1 AS (
@@ -552,15 +730,42 @@ function loadSessionRows() {
 }
 
 export async function getOverviewData(lang: Language = "en"): Promise<OverviewData> {
-  const [health, sessionRows] = await Promise.all([readHealth(lang), Promise.resolve(loadSessionRows())]);
-  const checkpoint = readCheckpoint();
-  const logEntries = collectLogs();
+  const runtime = await getRuntimeConfig();
+  const [health, sessionRows] = await Promise.all([
+    readHealth(lang, runtime.gatewayUrl),
+    Promise.resolve(loadSessionRows(runtime)),
+  ]);
+  const checkpoint = readCheckpoint(runtime.checkpointPath);
+  const logEntries = collectLogs(runtime);
   const errors = summarizeErrors(logEntries).map((item) => ({
     ...item,
     category: translateLogCategory(lang, item.category),
   }));
 
-  const db = openDb();
+  const db = tryOpenDb(runtime.dbPath);
+  if (!db) {
+    const allSessions = buildSessionList(sessionRows, checkpoint, logEntries, lang);
+    return {
+      health,
+      metrics: [
+        { label: lang === "zh" ? "L0 消息" : "L0 Messages", value: "0", hint: lang === "zh" ? "数据库当前不可读" : "Database currently unavailable" },
+        { label: lang === "zh" ? "L1 记忆" : "L1 Memories", value: "0", hint: lang === "zh" ? "数据库当前不可读" : "Database currently unavailable" },
+        { label: lang === "zh" ? "会话总数" : "Tracked Sessions", value: `${sessionRows.length}`, hint: lang === "zh" ? "来自 checkpoint 与数据库" : "Seen in checkpoint + DB" },
+        { label: lang === "zh" ? "近期错误" : "Recent Errors", value: `${errors.reduce((sum, item) => sum + item.count, 0)}`, hint: lang === "zh" ? "来自最新 Gateway 日志" : "From latest gateway logs" },
+      ],
+      memoryMix: [],
+      pipeline: {
+        trackedSessions: Object.keys(checkpoint.runner_states).length,
+        activeSessions: Object.values(checkpoint.pipeline_states).filter((item) => item.conversation_count > 0).length,
+        laggingSessions: allSessions.filter((item) => item.state === "lagging" || item.state === "attention").length,
+        lastPersonaTime: checkpoint.last_persona_time || null,
+        scenesProcessed: checkpoint.scenes_processed,
+      },
+      recentSessions: allSessions.slice(0, 8),
+      recentErrors: errors.slice(0, 6),
+    };
+  }
+
   try {
     const l0Count = Number(db.prepare("SELECT COUNT(*) AS cnt FROM l0_conversations").get().cnt ?? 0);
     const l1Count = Number(db.prepare("SELECT COUNT(*) AS cnt FROM l1_records").get().cnt ?? 0);
@@ -571,9 +776,10 @@ export async function getOverviewData(lang: Language = "en"): Promise<OverviewDa
       ORDER BY cnt DESC
     `).all() as Array<{ type: string; cnt: number }>;
 
-    const recentSessions = buildSessionList(sessionRows, checkpoint, logEntries, lang).slice(0, 8);
+    const allSessions = buildSessionList(sessionRows, checkpoint, logEntries, lang);
+    const recentSessions = allSessions.slice(0, 8);
     const activeSessions = Object.values(checkpoint.pipeline_states).filter((item) => item.conversation_count > 0).length;
-    const laggingSessions = recentSessions.filter((item) => item.state === "lagging" || item.state === "attention").length;
+    const laggingSessions = allSessions.filter((item) => item.state === "lagging" || item.state === "attention").length;
 
     return {
       health,
@@ -586,6 +792,7 @@ export async function getOverviewData(lang: Language = "en"): Promise<OverviewDa
       memoryMix: typeRows.map((row, index) => ({
         label: translateMemoryType(lang, row.type || "untyped"),
         count: Number(row.cnt),
+        sharePercent: l1Count > 0 ? Math.round((Number(row.cnt) / l1Count) * 100) : 0,
         tone: (["teal", "amber", "violet", "slate"][index % 4] as OverviewData["memoryMix"][number]["tone"]),
       })),
       pipeline: {
@@ -613,15 +820,20 @@ function buildSessionList(
     const runner = checkpoint.runner_states[row.session_key] ?? null;
     const pipeline = checkpoint.pipeline_states[row.session_key] ?? null;
     const maxRecordedAtMs = row.last_l0_at ? Date.parse(row.last_l0_at) || 0 : row.max_timestamp ?? 0;
-    const hasErrors = logEntries.some(
-      (entry) => entry.severity === "error" && entry.raw.includes(row.session_key),
-    );
+    const recentRelevantError = getRelevantSessionError({
+      sessionKey: row.session_key,
+      logEntries,
+      l1Count: Number(row.l1_count),
+      maxRecordedAtMs,
+      lastCursorMs: runner?.last_l1_cursor ?? 0,
+      lastL1At: row.last_l1_at,
+    });
     const derived = deriveSessionState({
       l1Count: Number(row.l1_count),
       l0Count: Number(row.l0_count),
       lastCursorMs: runner?.last_l1_cursor ?? 0,
       maxRecordedAtMs,
-      hasErrors,
+      recentRelevantError,
       pipeline,
       runner,
     }, lang);
@@ -643,9 +855,10 @@ function buildSessionList(
 }
 
 export async function getSessions(search?: string, lang: Language = "en") {
-  const checkpoint = readCheckpoint();
-  const logEntries = collectLogs();
-  const sessions = buildSessionList(loadSessionRows(), checkpoint, logEntries, lang);
+  const runtime = await getRuntimeConfig();
+  const checkpoint = readCheckpoint(runtime.checkpointPath);
+  const logEntries = collectLogs(runtime);
+  const sessions = buildSessionList(loadSessionRows(runtime), checkpoint, logEntries, lang);
 
   const normalized = search?.trim().toLowerCase();
   if (!normalized) return sessions;
@@ -660,9 +873,29 @@ export async function getSessions(search?: string, lang: Language = "en") {
 }
 
 export async function getSessionDetail(sessionKey: string, lang: Language = "en"): Promise<SessionDetailData> {
-  const [sessions, checkpoint] = await Promise.all([getSessions(undefined, lang), Promise.resolve(readCheckpoint())]);
+  const runtime = await getRuntimeConfig();
+  const [sessions, checkpoint] = await Promise.all([
+    getSessions(undefined, lang),
+    Promise.resolve(readCheckpoint(runtime.checkpointPath)),
+  ]);
   const session = sessions.find((item) => item.sessionKey === sessionKey) ?? null;
-  const db = openDb();
+  const db = tryOpenDb(runtime.dbPath);
+
+  if (!db) {
+    return {
+      session,
+      l0Messages: [],
+      l1Records: [],
+      logs: collectLogs(runtime)
+        .filter((entry) => entry.raw.includes(sessionKey))
+        .map((entry) => ({ ...entry, category: translateLogCategory(lang, entry.category) }))
+        .slice(-60),
+      checkpoint: {
+        runner: checkpoint.runner_states[sessionKey] ?? null,
+        pipeline: checkpoint.pipeline_states[sessionKey] ?? null,
+      },
+    };
+  }
 
   try {
     const l0Messages = db.prepare(`
@@ -679,7 +912,7 @@ export async function getSessionDetail(sessionKey: string, lang: Language = "en"
       ORDER BY created_time DESC
     `).all(sessionKey) as SessionDetailData["l1Records"];
 
-    const relatedLogs = collectLogs()
+    const relatedLogs = collectLogs(runtime)
       .filter((entry) => entry.raw.includes(sessionKey))
       .map((entry) => ({ ...entry, category: translateLogCategory(lang, entry.category) }))
       .slice(-60);
@@ -700,7 +933,8 @@ export async function getSessionDetail(sessionKey: string, lang: Language = "en"
 }
 
 export async function getErrorsPageData(lang: Language = "en"): Promise<ErrorPageData> {
-  const logs = collectLogs();
+  const runtime = await getRuntimeConfig();
+  const logs = collectLogs(runtime);
   const summaries = summarizeErrors(logs).map((entry) => ({
     ...entry,
     category: translateLogCategory(lang, entry.category),
@@ -715,22 +949,31 @@ export async function getErrorsPageData(lang: Language = "en"): Promise<ErrorPag
 }
 
 export async function getConfigPageData(lang: Language = "en"): Promise<ConfigPageData> {
-  const config = redactSecrets(safeReadJson(CONFIG_PATH, {}));
-  const checkpoint = readCheckpoint();
-  const stdoutStat = safeStat(STDOUT_LOG_PATH);
-  const stderrStat = safeStat(STDERR_LOG_PATH);
+  const runtime = await getRuntimeConfig();
+  const config = redactSecrets(safeReadJson(runtime.configPath, {}));
+  const checkpoint = readCheckpoint(runtime.checkpointPath);
+  const stdoutStat = safeStat(runtime.stdoutLogPath);
+  const stderrStat = safeStat(runtime.stderrLogPath);
 
   return {
     config,
+    runtime: {
+      dataDir: runtime.dataDir,
+      gatewayUrl: runtime.gatewayUrl,
+      defaults: runtime.defaults,
+      sources: runtime.sources,
+    },
     paths: [
-      { label: translatePathLabel(lang, "Data directory"), value: DATA_DIR },
-      { label: translatePathLabel(lang, "SQLite database"), value: DB_PATH },
-      { label: translatePathLabel(lang, "Checkpoint"), value: CHECKPOINT_PATH },
-      { label: translatePathLabel(lang, "Gateway stdout log"), value: STDOUT_LOG_PATH },
-      { label: translatePathLabel(lang, "Gateway stderr log"), value: STDERR_LOG_PATH },
+      { label: translatePathLabel(lang, "Data directory"), value: runtime.dataDir },
+      { label: translatePathLabel(lang, "SQLite database"), value: runtime.dbPath },
+      { label: translatePathLabel(lang, "Checkpoint"), value: runtime.checkpointPath },
+      { label: translatePathLabel(lang, "Gateway stdout log"), value: runtime.stdoutLogPath },
+      { label: translatePathLabel(lang, "Gateway stderr log"), value: runtime.stderrLogPath },
     ],
     environment: [
-      { label: translateEnvironmentLabel(lang, "Gateway URL"), value: GATEWAY_URL },
+      { label: translateEnvironmentLabel(lang, "Gateway URL"), value: runtime.gatewayUrl },
+      { label: translateEnvironmentLabel(lang, "Gateway URL source"), value: translateRuntimeSource(lang, runtime.sources.gatewayUrl) },
+      { label: translateEnvironmentLabel(lang, "Data directory source"), value: translateRuntimeSource(lang, runtime.sources.dataDir) },
       { label: translateEnvironmentLabel(lang, "Stdout log size"), value: stdoutStat ? `${(stdoutStat.size / 1024).toFixed(1)} KB` : (lang === "zh" ? "缺失" : "missing") },
       { label: translateEnvironmentLabel(lang, "Stderr log size"), value: stderrStat ? `${(stderrStat.size / 1024).toFixed(1)} KB` : (lang === "zh" ? "缺失" : "missing") },
     ],
