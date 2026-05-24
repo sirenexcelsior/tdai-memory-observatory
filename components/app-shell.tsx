@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
+  Bot,
   Database,
   Gauge,
   Search,
@@ -26,6 +27,7 @@ export function AppShell({
     { href: "/", label: text.shell.navOverview, icon: Gauge },
     { href: "/sessions", label: text.shell.navSessions, icon: Search },
     { href: "/errors", label: text.shell.navErrors, icon: AlertTriangle },
+    { href: "/mcp", label: "MCP", icon: Bot },
     { href: "/config", label: text.shell.navConfig, icon: Settings2 },
   ];
 
